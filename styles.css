@@ -175,7 +175,7 @@ body::before {
     max-width: 80%;  
 }
 
-.btn-home {
+#gameOver .btn {
     margin: 10px 0 0 0;
     width: 75%;
     max-width: 250px;
