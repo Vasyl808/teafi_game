@@ -133,15 +133,13 @@ class TeaJumpGame {
         document.getElementById('startBtn').addEventListener('click', () => {
             this.startGame();
         });
-        
+    
         document.getElementById('restartBtn').addEventListener('click', () => {
             this.restartGame();
         });
     
         document.getElementById('homeBtn').addEventListener('click', () => {
-            document.getElementById('startScreen').style.display = 'flex';
-            document.getElementById('gameOver').style.display = 'none';
-            this.gameState = 'start';
+            window.location.reload();
         });
     }
     
