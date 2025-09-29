@@ -1,5 +1,3 @@
-// TeaJumpGame.js
-
 class TeaJumpGame {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
