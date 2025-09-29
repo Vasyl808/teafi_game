@@ -175,6 +175,12 @@ body::before {
     max-width: 80%;  
 }
 
+#gameOver .btn {
+    margin: 10px 0 0 0;
+    width: 75%;
+    max-width: 250px;
+}
+
 .brand-title {
     font-family: 'Fredoka', cursive;
     font-size: clamp(2.5rem, 8vw, 3.5rem);
