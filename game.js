@@ -1,3 +1,5 @@
+// TeaJumpGame.js
+
 class TeaJumpGame {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
@@ -27,7 +29,12 @@ class TeaJumpGame {
             onGround: false,
             rotation: 0
         };
-        
+
+        // Tilt control params
+        this.tiltActive = false;
+        this.tiltX = 0; // store tilt value (gamma)
+        this.tiltSensitivity = 1.0; // feel free to adjust
+
         // Game elements
         this.platforms = [];
         this.collectibles = [];
@@ -37,6 +44,7 @@ class TeaJumpGame {
         
         this.generateInitialPlatforms();
         this.setupControls();
+        this.setupTiltControls(); // <<--- додано
         this.setupUI();
         this.updateDisplays();
     }
@@ -90,6 +98,37 @@ class TeaJumpGame {
         leftBtn.addEventListener('mouseup', () => this.keys['a'] = false);
         rightBtn.addEventListener('mousedown', () => this.keys['d'] = true);
         rightBtn.addEventListener('mouseup', () => this.keys['d'] = false);
+    }
+
+    setupTiltControls() {
+        // (1) Запит дозволу на iOS (тільки при потребі)
+        if (
+            typeof DeviceOrientationEvent !== 'undefined' &&
+            typeof DeviceOrientationEvent.requestPermission === 'function'
+        ) {
+            // Додаємо інструкцію/клік для дозволу тільки на iOS Safari
+            document.getElementById('startBtn').addEventListener('click', () => {
+                DeviceOrientationEvent.requestPermission().then(response => {
+                    if (response === 'granted') {
+                        this.tiltActive = true;
+                    }
+                }).catch(console.error);
+            });
+        } else {
+            // Android, Chrome та інші: tilt працює одразу
+            this.tiltActive = true;
+        }
+
+        // (2) Слухаємо deviceorientation
+        window.addEventListener('deviceorientation', (event) => {
+            if (!this.tiltActive) return;
+            if (event.gamma === null) return;
+            // Нормалізуємо gamma до [-30, +30]
+            let gamma = Math.max(-30, Math.min(30, event.gamma));
+            // Фільтр шуму (менше 3 градусів - ігнор)
+            if (Math.abs(gamma) < 3) gamma = 0;
+            this.tiltX = gamma;
+        });
     }
     
     setupUI() {
@@ -152,8 +191,9 @@ class TeaJumpGame {
     }
     
     generatePlatform(index) {
-        const types = ['normal', 'moving', 'spring', 'fragile'];
-        const weights = [60, 20, 15, 5];
+        // Added 'crumbling' type!
+        const types = ['normal', 'moving', 'spring', 'fragile', 'crumbling'];
+        const weights = [52, 18, 14, 6, 10]; // Adjusted weights, crumbling is rarer
         
         let type = 'normal';
         const rand = Math.random() * 100;
@@ -170,14 +210,18 @@ class TeaJumpGame {
         const platform = {
             x: Math.random() * (this.canvas.width - 100),
             y: this.canvas.height - (index * this.platformGap),
-            width: type === 'fragile' ? 80 : type === 'spring' ? 70 : 100,
+            width: type === 'fragile' ? 80 : type === 'spring' ? 70 : type === 'crumbling' ? 80 : 100,
             height: type === 'spring' ? 25 : 20,
             type: type,
             moveDirection: Math.random() > 0.5 ? 1 : -1,
             moveSpeed: 1.5 + Math.random(),
             broken: false,
             bounceHeight: 0,
-            hitCount: 0
+            hitCount: 0,
+            // for crumbling platforms
+            crumbling: false,
+            crumbleTimer: 0,
+            crumblePieces: []
         };
         
         // Set colors
@@ -186,6 +230,7 @@ class TeaJumpGame {
             case 'moving': platform.color = '#FF7043'; break;
             case 'spring': platform.color = '#42A5F5'; break;
             case 'fragile': platform.color = '#FFA726'; break;
+            case 'crumbling': platform.color = '#BDBDBD'; break;
         }
         
         this.platforms.push(platform);
@@ -219,18 +264,31 @@ class TeaJumpGame {
     }
     
     updatePlayer() {
-        // Horizontal movement
+        // -- Класичне керування кнопками --
+        let usingButton = false;
         if (this.keys['arrowleft'] || this.keys['a']) {
             this.player.velX = -this.player.speed;
             this.player.rotation = Math.max(this.player.rotation - 0.1, -0.3);
+            usingButton = true;
         } else if (this.keys['arrowright'] || this.keys['d']) {
             this.player.velX = this.player.speed;
             this.player.rotation = Math.min(this.player.rotation + 0.1, 0.3);
-        } else {
+            usingButton = true;
+        }
+
+        // -- Керування нахилом (якщо не натиснута кнопка) --
+        if (!usingButton && Math.abs(this.tiltX) > 0.1) {
+            // tiltX: -30...+30 (лівий/правий нахил)
+            this.player.velX = (this.tiltX / 30) * this.player.speed * this.tiltSensitivity;
+            this.player.rotation = Math.max(-0.3, Math.min(0.3, (this.tiltX / 30) * 0.3));
+        }
+
+        // Якщо не tilt і не кнопка, гальмуємо
+        if (!usingButton && Math.abs(this.tiltX) <= 0.1) {
             this.player.velX *= 0.85; // Friction
             this.player.rotation *= 0.9; // Return to upright
         }
-        
+
         // Gravity
         this.player.velY += 0.8;
         
@@ -258,7 +316,35 @@ class TeaJumpGame {
             if (platform.bounceHeight > 0) {
                 platform.bounceHeight *= 0.9;
             }
+
+            // Handle crumbling platforms
+            if (platform.type === 'crumbling' && platform.crumbling && !platform.broken) {
+                platform.crumbleTimer++;
+                if (platform.crumbleTimer > 15) {
+                    // Start crumble animation and remove platform
+                    platform.broken = true;
+                    this.createCrumblePieces(platform);
+                }
+            }
         });
+    }
+
+    createCrumblePieces(platform) {
+        // Create falling "pieces" for crumble animation
+        let pieceCount = 5;
+        for (let i = 0; i < pieceCount; i++) {
+            this.particles.push({
+                x: platform.x + (platform.width / pieceCount) * (i + 0.5),
+                y: platform.y + platform.height / 2,
+                velX: (Math.random() - 0.5) * 2,
+                velY: Math.random() * 4 + 2,
+                color: '#BDBDBD',
+                life: 35,
+                maxLife: 35,
+                alpha: 1,
+                size: platform.width / pieceCount * 0.8
+            });
+        }
     }
     
     updateCollectibles() {
@@ -308,6 +394,13 @@ class TeaJumpGame {
                             this.createJumpParticles(platform.x + platform.width/2, platform.y, '#FFA726');
                         }
                         this.player.velY = -this.player.jumpPower;
+                    } else if (platform.type === 'crumbling') {
+                        if (!platform.crumbling) {
+                            platform.crumbling = true;
+                            platform.crumbleTimer = 0;
+                        }
+                        this.player.velY = -this.player.jumpPower;
+                        this.createJumpParticles(platform.x + platform.width/2, platform.y, '#BDBDBD');
                     } else {
                         this.player.velY = -this.player.jumpPower;
                         this.createJumpParticles(platform.x + platform.width/2, platform.y, platform.color);
@@ -504,9 +597,13 @@ class TeaJumpGame {
                     platformGradient.addColorStop(1, '#42A5F5');
                     break;
                 case 'fragile':
-                    const alpha = Math.max(0.3, 1 - platform.hitCount * 0.4);
+                    var alpha = Math.max(0.3, 1 - platform.hitCount * 0.4);
                     platformGradient.addColorStop(0, `rgba(255, 183, 77, ${alpha})`);
                     platformGradient.addColorStop(1, `rgba(255, 167, 38, ${alpha})`);
+                    break;
+                case 'crumbling':
+                    platformGradient.addColorStop(0, '#EEEEEE');
+                    platformGradient.addColorStop(1, '#BDBDBD');
                     break;
             }
             
@@ -568,6 +665,25 @@ class TeaJumpGame {
                     this.ctx.lineTo(platform.x + 25 + i * 20, platform.y - (platform.bounceHeight || 0) + platform.height);
                     this.ctx.stroke();
                 }
+            } else if (platform.type === 'crumbling') {
+                // Crumbling icon / indicator
+                this.ctx.fillStyle = '#757575';
+                this.ctx.font = '16px serif';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('🪨', platform.x + platform.width/2, platform.y + platform.height/2 + 7);
+                if (platform.crumbling) {
+                    // Shake effect
+                    this.ctx.strokeStyle = '#B71C1C';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.setLineDash([4, 3]);
+                    this.ctx.strokeRect(
+                        platform.x,
+                        platform.y - (platform.bounceHeight || 0),
+                        platform.width,
+                        platform.height
+                    );
+                    this.ctx.setLineDash([]);
+                }
             }
             
             this.ctx.restore();
@@ -609,9 +725,15 @@ class TeaJumpGame {
             this.ctx.save();
             this.ctx.globalAlpha = particle.alpha;
             this.ctx.fillStyle = particle.color;
-            this.ctx.beginPath();
-            this.ctx.arc(particle.x, particle.y, particle.size || 3, 0, Math.PI * 2);
-            this.ctx.fill();
+            if (particle.size > 8) {
+                // Crumbling pieces as rectangles
+                this.ctx.fillRect(particle.x - particle.size/2, particle.y - 6, particle.size, 12);
+            } else {
+                // Default particle as circle
+                this.ctx.beginPath();
+                this.ctx.arc(particle.x, particle.y, particle.size || 3, 0, Math.PI * 2);
+                this.ctx.fill();
+            }
             this.ctx.restore();
         });
     }
